@@ -192,7 +192,7 @@ void print(int fd, char *c) {
 	int i = 0;
 	for (; *c != 0; i++) {
 		if (i > 64) {
-			syscall(SYS_write, fd, obuf, i);
+			write(fd, obuf, i);
 			i = 0;
 		}
 
@@ -201,7 +201,7 @@ void print(int fd, char *c) {
 	}
 
 	if (i > 0) {
-		syscall(SYS_write, fd, obuf, i);
+		write(fd, obuf, i);
 	}
 }
 
@@ -299,5 +299,5 @@ int main(int, char **);
 
 void __main(int argc, char **argv) {
 	int ret = main(argc, argv);
-	syscall(SYS_exit, ret);
+	exit(ret);
 }
