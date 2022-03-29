@@ -1,4 +1,10 @@
+#include <stdint.h>
+#include <stddef.h>
+#include <stdbool.h>
 #include <sys/syscall.h>
+#include <sys/types.h>
+
+#pragma once
 
 typedef unsigned long long u64;
 typedef uint32_t           u32;
@@ -278,6 +284,16 @@ consume_moar:
 }
 
 #define printf(...) do { dprintf(1, __VA_ARGS__); } while (0)
+
+void *memcpy(void *dst, const void *src, size_t n) {
+	char *_dst = dst;
+	const char *_src = src;
+	for (int i = n; i >= 0; i--) {
+		_dst[i] = _src[i];
+	}
+
+	return dst;
+}
 
 int main(int, char **);
 

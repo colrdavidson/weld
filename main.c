@@ -1,7 +1,3 @@
-#include <stdint.h>
-#include <stddef.h>
-#include <sys/types.h>
-
 #include "minilib.c"
 
 #define panic(...) do { dprintf(2, __VA_ARGS__); exit(1); } while (0)
@@ -32,9 +28,16 @@ typedef struct {
 } ELF64_Header;
 
 typedef struct {
-	uint8_t *data;
+	u8 *data;
 	u64 size;
 } Slice;
+
+Slice to_slice(u8 *data, u64 size) {
+	Slice s;
+	s.data = data;
+	s.size = size;
+	return s;
+}
 
 Slice load_file(char *filename) {
 	int fd = open(filename, O_RDONLY);
@@ -45,17 +48,14 @@ Slice load_file(char *filename) {
 	u64 length = lseek(fd, 0, SEEK_END);
 	lseek(fd, 0, SEEK_SET);
 
-	uint8_t *data = (uint8_t *)malloc(length + 1);
+	u8 *data = (u8 *)malloc(length + 1);
 	read(fd, data, length);
 	close(fd);
 
-	Slice f;
-	f.data = data;
-	f.size = length;
-	return f;
+	return to_slice(data, length);
 }
 
-void print_hexdump(Slice s) {
+void hexdump(Slice s) {
 	int display_width = 16;
 
 	printf("[");
@@ -68,7 +68,7 @@ void print_hexdump(Slice s) {
 		}
 
 		if (i + display_width == s.size) {
-			printf("%02x%02x", s.data[i+j], s.data[i+j+1]);
+			printf("%02x%02x ", s.data[i+j], s.data[i+j+1]);
 		} else {
 			printf("%02x%02x\n", s.data[i+j], s.data[i+j+1]);
 		}
@@ -79,9 +79,23 @@ void print_hexdump(Slice s) {
 		for (; j < (s.size - 2); j += 2) {
 			printf("%02x%02x ", s.data[j], s.data[j+1]);
 		}
-		printf("%02x%02x", s.data[j], s.data[j+1]);
+
+		int rem = s.size - j;
+		if (rem == 2) {
+			printf("%02x%02x", s.data[j], s.data[j+1]);
+		} else if (rem == 1) {
+			printf("%02x", s.data[j]);
+		}
 	}
 	printf("]\n");
+}
+
+void parse_elf(Slice s) {
+	u8 foo[] = { 1, 2, 3, 4, 5 };
+	u8 bar[5] = { 0 };
+	memcpy(bar, foo, 5);
+
+	hexdump(to_slice(bar, 5));
 }
 
 int main(int argc, char **argv) {
@@ -91,8 +105,8 @@ int main(int argc, char **argv) {
 
 	Slice s = load_file(argv[1]);
 	printf("Loaded %s and got %d B\n", argv[1], s.size);
-	//print_hexdump(s);
-	//parse_elf(s);
+	//hexdump(s);
+	parse_elf(s);
 
 	return 0;
 }
