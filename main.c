@@ -2,6 +2,24 @@
 
 #define panic(...) do { dprintf(2, __VA_ARGS__); exit(1); } while (0)
 
+#define ELFCLASS64  2
+#define ELFDATA2LSB 1
+#define EM_X86_64   62
+
+#define SHF_WRITE 0x1
+#define SHF_ALLOC 0x2
+
+enum {
+	SHT_NULL = 0,
+	SHT_PROGBITS,
+	SHT_SYMTAB,
+	SHT_STRTAB,
+	SHT_RELA,
+	SHT_HASH,
+	SHT_DYNAMIC
+};
+
+#pragma pack(1)
 typedef struct {
 	u8 magic[4];
 	u8 class;
@@ -16,16 +34,42 @@ typedef struct {
 	u16 type;
 	u16 machine;
 	u32 version;
-	u64 entry;
+	u64 entrypoint;
 	u64 program_hdr_offset;
 	u64 section_hdr_offset;
 	u32 flags;
-	u16 ehsize;
+	u16 eh_size;
 	u16 program_hdr_entry_size;
 	u16 program_hdr_num;
+	u16 section_hdr_entry_size;
 	u16 section_hdr_num;
 	u16 section_hdr_str_idx;
 } ELF64_Header;
+
+typedef struct {
+	u32 type;
+	u32 flags;
+	u64 offset;
+	u64 virtual_addr;
+	u64 physical_addr;
+	u64 file_size;
+	u64 mem_size;
+	u64 align;
+} ELF64_Program_Header;
+
+typedef struct {
+	u32 name;
+	u32 type;
+	u64 flags;
+	u64 addr;
+	u64 offset;
+	u64 size;
+	u32 link;
+	u32 info;
+	u64 addr_align;
+	u64 entry_size;
+} ELF64_Section_Header;
+#pragma pack()
 
 typedef struct {
 	u8 *data;
@@ -37,6 +81,17 @@ Slice to_slice(u8 *data, u64 size) {
 	s.data = data;
 	s.size = size;
 	return s;
+}
+
+Slice slice_idx(Slice s, u64 idx) {
+	if (idx > s.size) {
+		panic("Invalid idx %d:%d!\n", idx, s.size);
+	}
+
+	Slice out;
+	out.data = s.data + idx;
+	out.size = s.size - idx;
+	return out;
 }
 
 Slice load_file(char *filename) {
@@ -56,7 +111,7 @@ Slice load_file(char *filename) {
 }
 
 void hexdump(Slice s) {
-	int display_width = 16;
+	int display_width = 32;
 
 	printf("[");
 	int tail = s.size % display_width;
@@ -90,12 +145,89 @@ void hexdump(Slice s) {
 	printf("]\n");
 }
 
-void parse_elf(Slice s) {
-	u8 foo[] = { 1, 2, 3, 4, 5 };
-	u8 bar[5] = { 0 };
-	memcpy(bar, foo, 5);
+/*```
 
-	hexdump(to_slice(bar, 5));
+	A quick ELF briefer:
+
+	----------------------------------
+    | ELF Header                     |--+
+    ----------------------------------  |
+    | Program Header                 |  |
+    ----------------------------------  |
+ +->| Sections: .text, .strtab, etc. |  |
+ |  ----------------------------------  |
+ +--| Section Headers                |<-+
+    ----------------------------------
+
+	Finding the Section Header table: ("What sections does this ELF have?")
+	File start + ELF_Header.shoff -> Section_Header table
+
+	Finding the String Table for Section Header Names: ("How do I know what section 1 is called?")
+	Section_Header table[ELF_Header.shstrndx] -> Section Header for Name Table
+
+	Finding Data for Section Headers: ("How do I get the data in the .text section?")
+	File start + Section_Header.offset -> Section Data
+
+```*/
+void load_elf(Slice s) {
+	if (s.size < sizeof(ELF64_Header)) {
+		panic("Invalid elf file!\n");
+	}
+
+	// Checking a small chunk of the ELF header (Calling it a Pre_Header here)
+	// to know how to interpret the rest of the header
+	// The full header could be ELF32 or ELF64 or garbage,
+	// I won't know until I've scanned the Pre_Header fields
+	u8 magic[4] = { 0x7F, 'E', 'L', 'F' };
+	ELF_Pre_Header *pre_hdr = (ELF_Pre_Header *)s.data;
+	if (!memeq(pre_hdr->magic, magic, sizeof(magic))) {
+		panic("File is not an ELF!\n");
+	}
+	if (pre_hdr->class != ELFCLASS64 || pre_hdr->endian != ELFDATA2LSB) {
+		panic("TODO: Only supports 64 bit, little endian ELF\n");
+	}
+
+	ELF64_Header *elf_hdr = (ELF64_Header *)s.data;
+	if (elf_hdr->machine != EM_X86_64) {
+		panic("TODO: Only supports x86_64\n");
+	}
+	if (elf_hdr->version != 1) {
+		panic("Invalid ELF version\n");
+	}
+
+	// Ensure that the ELF file actually has enough space to fit the full claimed section header table
+	if (elf_hdr->section_hdr_offset + (elf_hdr->section_hdr_num * sizeof(ELF64_Section_Header)) > s.size) {
+		panic("Invalid elf file!\n");
+	}
+	ELF64_Section_Header *section_hdr_table = (ELF64_Section_Header *)(s.data + elf_hdr->section_hdr_offset);
+
+	// Get section header name table header
+	if (elf_hdr->section_hdr_str_idx >= elf_hdr->section_hdr_num) {
+		panic("Invalid section header name table index\n");
+	}
+	ELF64_Section_Header *section_strtable_hdr = &section_hdr_table[elf_hdr->section_hdr_str_idx];
+	if (section_strtable_hdr->type != SHT_STRTAB) {
+		panic("Section header name table is invalid\n");
+	}
+
+	// Get section header name table
+	if ((section_strtable_hdr->offset + section_strtable_hdr->size) > s.size) {
+		panic("Section header name table is too large for file?\n");
+	}
+	Slice strtable = to_slice(s.data + section_strtable_hdr->offset, section_strtable_hdr->size);
+
+	for (int i = 0; i < elf_hdr->section_hdr_num; i += 1) {
+		ELF64_Section_Header *s_hdr = &section_hdr_table[i];
+		Slice sect_name = slice_idx(strtable, s_hdr->name);
+
+		printf("%d | %s\n", i, (char *)sect_name.data);
+		if (s_hdr->type == SHT_PROGBITS || s_hdr->type == SHT_STRTAB) {
+			Slice sect = slice_idx(s, s_hdr->offset);
+			// hexdump(sect);
+		}
+	}
+
+
 }
 
 int main(int argc, char **argv) {
@@ -105,8 +237,7 @@ int main(int argc, char **argv) {
 
 	Slice s = load_file(argv[1]);
 	printf("Loaded %s and got %d B\n", argv[1], s.size);
-	//hexdump(s);
-	parse_elf(s);
+	load_elf(s);
 
 	return 0;
 }

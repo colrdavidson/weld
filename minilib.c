@@ -285,6 +285,18 @@ consume_moar:
 
 #define printf(...) do { dprintf(1, __VA_ARGS__); } while (0)
 
+int memeq(const void *dst, const void *src, size_t n) {
+	const char *_dst = dst;
+	const char *_src = src;
+	for (int i = 0; i < n; i++) {
+		if (_src[i] != _dst[i]) {
+			return 0;
+		}
+	}
+
+	return 1;
+}
+
 void *memcpy(void *dst, const void *src, size_t n) {
 	char *_dst = dst;
 	const char *_src = src;
