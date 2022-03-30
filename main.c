@@ -1,6 +1,8 @@
 #include "minilib.c"
 
 #define panic(...) do { dprintf(2, __VA_ARGS__); exit(1); } while (0)
+#define floor_size(addr, size) ((addr) - ((addr) % (size)))
+#define round_size(addr, size) (((addr) + (size)) - ((addr) % (size)))
 
 #define ELFCLASS64  2
 #define ELFDATA2LSB 1
@@ -8,6 +10,8 @@
 
 #define SHF_WRITE 0x1
 #define SHF_ALLOC 0x2
+
+#define PT_LOAD 1
 
 enum {
 	SHT_NULL = 0,
@@ -70,6 +74,13 @@ typedef struct {
 	u64 entry_size;
 } ELF64_Section_Header;
 #pragma pack()
+
+typedef struct {
+	u32 type;
+	u64 offset;
+	u64 addr;
+	u64 size;
+} Segment;
 
 typedef struct {
 	u8 *data;
@@ -145,6 +156,7 @@ void hexdump(Slice s) {
 	printf("]\n");
 }
 
+
 /*```
 
 	A quick ELF briefer:
@@ -169,7 +181,7 @@ void hexdump(Slice s) {
 	File start + Section_Header.offset -> Section Data
 
 ```*/
-void load_elf(Slice s) {
+u64 load_elf(Slice s) {
 	if (s.size < sizeof(ELF64_Header)) {
 		panic("Invalid elf file!\n");
 	}
@@ -193,6 +205,42 @@ void load_elf(Slice s) {
 	}
 	if (elf_hdr->version != 1) {
 		panic("Invalid ELF version\n");
+	}
+
+
+	// Ensure that the ELF file actually has enough space to fit the full claimed program header table
+	if (elf_hdr->program_hdr_offset + (elf_hdr->program_hdr_num * sizeof(ELF64_Program_Header)) > s.size) {
+		panic("Invalid elf file!\n");
+	}
+	ELF64_Program_Header *program_hdr_table = (ELF64_Program_Header *)(s.data + elf_hdr->program_hdr_offset);
+
+	// Load segments into memory
+	for (int i = 0; i < elf_hdr->program_hdr_num; i += 1) {
+		ELF64_Program_Header *p_hdr = &program_hdr_table[i];
+
+
+		if (p_hdr->type != PT_LOAD) {
+			continue;
+		}
+
+		bool exec_perm  = (p_hdr->flags & 0x1) == 0x1;
+		bool write_perm = (p_hdr->flags & 0x2) == 0x2;
+		bool read_perm  = (p_hdr->flags & 0x4) == 0x4;
+
+		printf("0x%02x | %s%s%s | vaddr: 0x%08x paddr: 0x%08x memsz: 0x%08x | align: %d\n",
+			i, (exec_perm) ? "X" : " ", (write_perm) ? "W" : " ", (read_perm) ? "R" : " ",
+			p_hdr->virtual_addr, p_hdr->physical_addr, p_hdr->mem_size, p_hdr->align);
+
+		u64 aligned_addr = floor_size(p_hdr->virtual_addr, p_hdr->align);
+		u64 region_size  = round_size(p_hdr->mem_size, p_hdr->align);
+
+		u8 *seg = mmap((void *)aligned_addr, region_size, PROT_EXEC | PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, 0, 0);
+		if ((u64)seg != aligned_addr) {
+			panic("WTF? 0x%08x != 0x%08x\n", seg, aligned_addr);
+		}
+
+		u8 *segment_ptr = s.data + p_hdr->offset;
+		memcpy(seg, segment_ptr, p_hdr->file_size);
 	}
 
 	// Ensure that the ELF file actually has enough space to fit the full claimed section header table
@@ -223,11 +271,11 @@ void load_elf(Slice s) {
 		printf("%d | %s\n", i, (char *)sect_name.data);
 		if (s_hdr->type == SHT_PROGBITS || s_hdr->type == SHT_STRTAB) {
 			Slice sect = slice_idx(s, s_hdr->offset);
-			// hexdump(sect);
+			//hexdump(sect);
 		}
 	}
 
-
+	return elf_hdr->entrypoint;
 }
 
 int main(int argc, char **argv) {
@@ -237,7 +285,12 @@ int main(int argc, char **argv) {
 
 	Slice s = load_file(argv[1]);
 	printf("Loaded %s and got %d B\n", argv[1], s.size);
-	load_elf(s);
+	u64 entrypoint = load_elf(s);
+
+/*
+	typedef void (*extern_main)(int argc, char **argv);
+	((extern_main)(entrypoint))(argc - 1, argv + 1);
+*/
 
 	return 0;
 }

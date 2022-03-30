@@ -96,7 +96,9 @@ static __inline long __syscall6(long n, long a1, long a2, long a3, long a4, long
 
 #define PROT_READ  1
 #define PROT_WRITE 2
+#define PROT_EXEC  4
 #define MAP_PRIVATE   0x02
+#define MAP_FIXED     0x10
 #define MAP_ANONYMOUS 0x20
 #define O_RDONLY 0
 #define SEEK_SET 0
