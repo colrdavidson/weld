@@ -8,19 +8,27 @@
 #define ELFDATA2LSB 1
 #define EM_X86_64   62
 
-#define SHF_WRITE 0x1
-#define SHF_ALLOC 0x2
+#define SHF_WRITE (1 << 0)
+#define SHF_ALLOC (1 << 1)
+#define SHF_TLS   (1 << 10)
 
 #define PT_LOAD 1
+#define PT_TLS  7
+
+#define ELF64_R_SYM(i) ((i) >> 32)
+#define ELF64_R_TYPE(i) ((i) & (0xFFFFFFFFL))
 
 enum {
-	SHT_NULL = 0,
-	SHT_PROGBITS,
-	SHT_SYMTAB,
-	SHT_STRTAB,
-	SHT_RELA,
-	SHT_HASH,
-	SHT_DYNAMIC
+	SHT_NULL     = 0,
+	SHT_PROGBITS = 1,
+	SHT_SYMTAB   = 2,
+	SHT_STRTAB   = 3,
+	SHT_RELA     = 4,
+	SHT_HASH     = 5,
+	SHT_DYNAMIC  = 6,
+	SHT_NOTE     = 7,
+	SHT_NOBITS   = 8,
+	SHT_REL      = 9,
 };
 
 #pragma pack(1)
@@ -73,12 +81,13 @@ typedef struct {
 	u64 addr_align;
 	u64 entry_size;
 } ELF64_Section_Header;
+
+typedef struct {
+} ELF64_Rela;
 #pragma pack()
 
 typedef struct {
-	u32 type;
-	u64 offset;
-	u64 addr;
+	u8 *data;
 	u64 size;
 } Segment;
 
@@ -114,10 +123,9 @@ Slice load_file(char *filename) {
 	u64 length = lseek(fd, 0, SEEK_END);
 	lseek(fd, 0, SEEK_SET);
 
-	u8 *data = (u8 *)malloc(length + 1);
-	read(fd, data, length);
-	close(fd);
+	u64 aligned_length = round_size(length, 0x1000);
 
+	u8 *data = mmap(NULL, aligned_length, PROT_READ, MAP_FILE | MAP_PRIVATE, fd, 0);
 	return to_slice(data, length);
 }
 
@@ -214,33 +222,85 @@ u64 load_elf(Slice s) {
 	}
 	ELF64_Program_Header *program_hdr_table = (ELF64_Program_Header *)(s.data + elf_hdr->program_hdr_offset);
 
+	Segment segment_table[20] = {0};
+	u64 seg_count = 0;
+
 	// Load segments into memory
 	for (int i = 0; i < elf_hdr->program_hdr_num; i += 1) {
 		ELF64_Program_Header *p_hdr = &program_hdr_table[i];
 
+		switch (p_hdr->type) {
+		case PT_LOAD: {
+			bool exec_perm  = (p_hdr->flags & 0x1) == 0x1;
+			bool write_perm = (p_hdr->flags & 0x2) == 0x2;
+			bool read_perm  = (p_hdr->flags & 0x4) == 0x4;
 
-		if (p_hdr->type != PT_LOAD) {
-			continue;
+			printf("LOAD 0x%02x | %s%s%s | vaddr: 0x%08x paddr: 0x%08x memsz: 0x%08x | align: %d\n",
+				i, (exec_perm) ? "X" : " ", (write_perm) ? "W" : " ", (read_perm) ? "R" : " ",
+				p_hdr->virtual_addr, p_hdr->physical_addr, p_hdr->mem_size, p_hdr->align);
+
+			u64 aligned_start_addr = floor_size(p_hdr->virtual_addr, 0x1000);
+			u64 aligned_end_addr   = round_size(p_hdr->virtual_addr + p_hdr->mem_size, 0x1000);
+			u64 region_size        = floor_size(aligned_end_addr - aligned_start_addr, 0x1000);
+			printf("allocating 0x%08x\n", region_size);
+
+			u8 *aligned_seg = mmap((void *)aligned_start_addr, region_size, PROT_EXEC | PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, 0, 0);
+			if ((u64)aligned_seg != aligned_start_addr) {
+				panic("WTF? 0x%08x != 0x%08x\n", aligned_seg, aligned_start_addr);
+			}
+
+			u8 *seg = (u8 *)p_hdr->virtual_addr;
+
+			// load file data into memory
+			if (p_hdr->file_size > 0) {
+				u8 *segment_ptr = s.data + p_hdr->offset;
+
+				printf("%d | 0x%08x <- 0x%08x | %d B\n", i, seg, segment_ptr, p_hdr->file_size);
+				memcpy(seg, segment_ptr, p_hdr->file_size);
+			}
+
+			// clear out leftover space
+			u64 rem_size = aligned_end_addr - (u64)(seg + p_hdr->file_size);
+			if (rem_size > 0) {
+				printf("%d | 0x%08x <- ZERO | %d B\n", i, seg + p_hdr->file_size, rem_size);
+				memset(seg + p_hdr->file_size, 0, rem_size);
+			}
+
+			Segment sg = {.data = seg, .size = region_size};
+			segment_table[seg_count++] = sg;
+		} break;
+		case PT_TLS: {
+			bool exec_perm  = (p_hdr->flags & 0x1) == 0x1;
+			bool write_perm = (p_hdr->flags & 0x2) == 0x2;
+			bool read_perm  = (p_hdr->flags & 0x4) == 0x4;
+
+			printf("TLS 0x%02x | %s%s%s | vaddr: 0x%08x paddr: 0x%08x memsz: 0x%08x | align: %d\n",
+				i, (exec_perm) ? "X" : " ", (write_perm) ? "W" : " ", (read_perm) ? "R" : " ",
+				p_hdr->virtual_addr, p_hdr->physical_addr, p_hdr->mem_size, p_hdr->align);
+
+			int seg_idx = -1;
+			for (int i = 0; i < seg_count; i++) {
+				u64 vaddr = floor_size(p_hdr->virtual_addr, p_hdr->align);
+				if ((u64)segment_table[i].data == vaddr) {
+					seg_idx = i;
+					break;
+				}
+			}
+			if (seg_idx == -1) {
+				panic("Failed to get existing segment for TLS!\n");
+			}
+
+			u64 region_size  = round_size(p_hdr->mem_size, 0x1000);
+			u8 *seg = mmap(0, region_size, PROT_EXEC | PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, 0, 0);
+			if (seg == NULL) {
+				panic("Failed to allocate TLS segment!\n");
+			}
+
+			memcpy(seg, segment_table[seg_idx].data, p_hdr->mem_size);
+			printf("Setting FS to 0x%08x\n", seg);
+			arch_prctl(ARCH_SET_FS, seg);
+		} break;
 		}
-
-		bool exec_perm  = (p_hdr->flags & 0x1) == 0x1;
-		bool write_perm = (p_hdr->flags & 0x2) == 0x2;
-		bool read_perm  = (p_hdr->flags & 0x4) == 0x4;
-
-		printf("0x%02x | %s%s%s | vaddr: 0x%08x paddr: 0x%08x memsz: 0x%08x | align: %d\n",
-			i, (exec_perm) ? "X" : " ", (write_perm) ? "W" : " ", (read_perm) ? "R" : " ",
-			p_hdr->virtual_addr, p_hdr->physical_addr, p_hdr->mem_size, p_hdr->align);
-
-		u64 aligned_addr = floor_size(p_hdr->virtual_addr, p_hdr->align);
-		u64 region_size  = round_size(p_hdr->mem_size, p_hdr->align);
-
-		u8 *seg = mmap((void *)aligned_addr, region_size, PROT_EXEC | PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, 0, 0);
-		if ((u64)seg != aligned_addr) {
-			panic("WTF? 0x%08x != 0x%08x\n", seg, aligned_addr);
-		}
-
-		u8 *segment_ptr = s.data + p_hdr->offset;
-		memcpy(seg, segment_ptr, p_hdr->file_size);
 	}
 
 	// Ensure that the ELF file actually has enough space to fit the full claimed section header table
@@ -269,9 +329,20 @@ u64 load_elf(Slice s) {
 		Slice sect_name = slice_idx(strtable, s_hdr->name);
 
 		printf("%d | %s\n", i, (char *)sect_name.data);
-		if (s_hdr->type == SHT_PROGBITS || s_hdr->type == SHT_STRTAB) {
+		if (s_hdr->type == SHT_PROGBITS) {
 			Slice sect = slice_idx(s, s_hdr->offset);
 			//hexdump(sect);
+		}
+
+		if (s_hdr->type == SHT_RELA) {
+			Slice sect = slice_idx(s, s_hdr->offset);
+
+/*
+			for (int j = 0; j <
+			switch (s_hdr->info) {
+				case
+			}
+*/
 		}
 	}
 
@@ -286,11 +357,11 @@ int main(int argc, char **argv) {
 	Slice s = load_file(argv[1]);
 	printf("Loaded %s and got %d B\n", argv[1], s.size);
 	u64 entrypoint = load_elf(s);
+	printf("entrypoint at 0x%08x\n", entrypoint);
 
-/*
+	//dbgbreak();
 	typedef void (*extern_main)(int argc, char **argv);
 	((extern_main)(entrypoint))(argc - 1, argv + 1);
-*/
 
 	return 0;
 }

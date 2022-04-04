@@ -97,10 +97,15 @@ static __inline long __syscall6(long n, long a1, long a2, long a3, long a4, long
 #define PROT_READ  1
 #define PROT_WRITE 2
 #define PROT_EXEC  4
+#define MAP_FILE      0
 #define MAP_PRIVATE   0x02
 #define MAP_FIXED     0x10
 #define MAP_ANONYMOUS 0x20
 #define O_RDONLY 0
+#define ARCH_SET_GS	0x1001
+#define ARCH_SET_FS	0x1002
+#define ARCH_GET_FS	0x1003
+#define ARCH_GET_GS	0x1004
 #define SEEK_SET 0
 #define SEEK_END 2
 
@@ -112,6 +117,10 @@ i64 __syscall_ret(u64 r) {
 		return -1;
 	}
 	return r;
+}
+
+static inline void dbgbreak(void) {
+	asm("int $3");
 }
 
 ssize_t write(int fd, uint8_t *buf, u64 size) {
@@ -141,6 +150,22 @@ i64 lseek(int fd, i64 offset, u32 flag) {
 
 i64 read(int fd, uint8_t *buf, u64 size) {
 	return syscall(SYS_read, fd, buf, size);
+}
+
+int arch_prctl(int code, u8 *addr) {
+	u64 addr64;
+	void *prctl_arg = &addr64;
+
+	int ret = syscall(SYS_arch_prctl, code, prctl_arg);
+	if (!ret) {
+		if ((uintptr_t)addr64 != addr64) {
+			return -1;
+		}
+
+		*addr = (uintptr_t)addr64;
+	}
+
+	return ret;
 }
 
 void *mmap(void *start, size_t len, int prot, int flags, int fd, i64 off) {
@@ -276,8 +301,18 @@ consume_moar:
 		} break;
 		case 'b': {
 			u64 i = __builtin_va_arg(args, u64);
-			print(fd, "0b");
-			putn(fd, i, 2);
+
+			uint8_t tbuf[64];
+			int sz = itoa(i, 2, tbuf);
+
+			int pad_sz = min_len - (sz - 1);
+			while (pad_sz > 0) {
+				putc(fd, '0');
+				pad_sz--;
+			}
+
+			write(fd, tbuf, sz - 1);
+			min_len = 0;
 		} break;
 		}
 	}
@@ -290,7 +325,7 @@ consume_moar:
 int memeq(const void *dst, const void *src, size_t n) {
 	const char *_dst = dst;
 	const char *_src = src;
-	for (int i = 0; i < n; i++) {
+	for (size_t i = 0; i < n; i++) {
 		if (_src[i] != _dst[i]) {
 			return 0;
 		}
@@ -300,10 +335,27 @@ int memeq(const void *dst, const void *src, size_t n) {
 }
 
 void *memcpy(void *dst, const void *src, size_t n) {
+	if (n == 0) {
+		return dst;
+	}
+
 	char *_dst = dst;
 	const char *_src = src;
-	for (int i = n; i >= 0; i--) {
+
+	size_t i = n - 1;
+	while (i > 0) {
 		_dst[i] = _src[i];
+		i--;
+	}
+	_dst[0] = _src[0];
+
+	return dst;
+}
+
+void *memset(void *dst, int val, unsigned long n) {
+	char *_dst = dst;
+	for (size_t i = 0; i < n; i++) {
+		_dst[i] = val;
 	}
 
 	return dst;
