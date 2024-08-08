@@ -355,7 +355,9 @@ static struct builtin_tls {
 } builtin_tls[1];
 
 int main(int argc, char **argv) {
-	syscall(SYS_arch_prctl, ARCH_SET_FS, &builtin_tls);
+	// Step 1 is setting a bootstrap FS so clang doesn't act dumb
+	syscall(SYS_arch_prctl, ARCH_SET_FS, (void *)builtin_tls);
+
 	if (argc < 2) {
 		panic("Please provide the linker a program to link\n");
 	}
