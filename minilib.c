@@ -361,6 +361,10 @@ void *memset(void *dst, int val, unsigned long n) {
 	return dst;
 }
 
+void __stack_chk_fail(void) {
+	syscall(SYS_exit, 1);
+}
+
 int main(int, char **);
 
 void __main(int argc, char **argv) {

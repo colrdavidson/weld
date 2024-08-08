@@ -349,7 +349,13 @@ u64 load_elf(Slice s) {
 	return elf_hdr->entrypoint;
 }
 
+static struct builtin_tls {
+	char c;
+	void *space[16];
+} builtin_tls[1];
+
 int main(int argc, char **argv) {
+	syscall(SYS_arch_prctl, ARCH_SET_FS, &builtin_tls);
 	if (argc < 2) {
 		panic("Please provide the linker a program to link\n");
 	}
